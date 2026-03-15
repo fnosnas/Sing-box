@@ -457,4 +457,395 @@ async def download_files_and_run():
         }
         config["inbounds"].append(tuic_config)
    
-    if S5_PORT and
+    if S5_PORT and S5_PORT > 0:
+        s5_config = {
+            "tag": "s5-in",
+            "type": "socks",
+            "listen": "::",
+            "listen_port": S5_PORT,
+            "users": [
+                {
+                    "username": UUID[0:8],
+                    "password": UUID[-12:]
+                }
+            ]
+        }
+        config["inbounds"].append(s5_config)
+   
+    if ANYTLS_PORT and ANYTLS_PORT > 0:
+        anytls_config = {
+            "tag": "anytls-in",
+            "type": "anytls",
+            "listen": "::",
+            "listen_port": ANYTLS_PORT,
+            "users": [
+                {
+                    "password": UUID
+                }
+            ],
+            "tls": {
+                "enabled": True,
+                "certificate_path": f"{FILE_PATH}/cert.pem",
+                "key_path": f"{FILE_PATH}/private.key"
+            }
+        }
+        config["inbounds"].append(anytls_config)
+   
+    if ANYREALITY_PORT and ANYREALITY_PORT > 0:
+        anyreality_config = {
+            "tag": "anyreality-in",
+            "type": "anytls",
+            "listen": "::",
+            "listen_port": ANYREALITY_PORT,
+            "users": [
+                {
+                    "password": UUID
+                }
+            ],
+            "tls": {
+                "enabled": True,
+                "server_name": "www.iij.ad.jp",
+                "reality": {
+                    "enabled": True,
+                    "handshake": {
+                        "server": "www.iij.ad.jp",
+                        "server_port": 443
+                    },
+                    "private_key": private_key,
+                    "short_id": [""]
+                }
+            }
+        }
+        config["inbounds"].append(anyreality_config)
+   
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=2)
+   
+    # 啟動 Komari Agent（取代原哪吒）
+    if KOMARI_SERVER and KOMARI_TOKEN:
+        command = f"nohup {agent_path} -e \"{KOMARI_SERVER}\" -t \"{KOMARI_TOKEN}\" >/dev/null 2>&1 &"
+        try:
+            exec_cmd(command)
+            print('Komari Agent 已啟動')
+            time.sleep(1)
+        except Exception as e:
+            print(f"Komari Agent 啟動失敗: {e}")
+    else:
+        print('未設定 KOMARI_SERVER 或 KOMARI_TOKEN，跳過監控 Agent')
+   
+    # Run sbX (sing-box)
+    command = f"nohup {os.path.join(FILE_PATH, 'web')} run -c {os.path.join(FILE_PATH, 'config.json')} >/dev/null 2>&1 &"
+    try:
+        exec_cmd(command)
+        print('web (sing-box) is running')
+        time.sleep(1)
+    except Exception as e:
+        print(f"web running error: {e}")
+   
+    # Run cloudflared (Argo)
+    if not DISABLE_ARGO:
+        if os.path.exists(os.path.join(FILE_PATH, 'bot')):
+            if re.match(r'^[A-Z0-9a-z=]{120,250}$', ARGO_AUTH):
+                args = f"tunnel --edge-ip-version auto --no-autoupdate --protocol http2 run --token {ARGO_AUTH}"
+            elif "TunnelSecret" in ARGO_AUTH:
+                args = f"tunnel --edge-ip-version auto --config {os.path.join(FILE_PATH, 'tunnel.yml')} run"
+            else:
+                args = f"tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile {os.path.join(FILE_PATH, 'boot.log')} --loglevel info --url http://localhost:{ARGO_PORT}"
+           
+            try:
+                exec_cmd(f"nohup {os.path.join(FILE_PATH, 'bot')} {args} >/dev/null 2>&1 &")
+                print('bot (cloudflared) is running')
+                time.sleep(2)
+            except Exception as e:
+                print(f"Error executing command: {e}")
+   
+    time.sleep(5)
+   
+    # Extract domains and generate sub.txt
+    await extract_domains()
+
+# Extract domains from cloudflared logs
+async def extract_domains():
+    if DISABLE_ARGO:
+        await generate_links(None)
+        return
+    argo_domain = None
+    if ARGO_AUTH and ARGO_DOMAIN:
+        argo_domain = ARGO_DOMAIN
+        print(f'ARGO_DOMAIN: {argo_domain}')
+        await generate_links(argo_domain)
+    else:
+        try:
+            with open(boot_log_path, 'r') as f:
+                file_content = f.read()
+           
+            lines = file_content.split('\n')
+            argo_domains = []
+           
+            for line in lines:
+                domain_match = re.search(r'https?://([^ ]*trycloudflare\.com)/?', line)
+                if domain_match:
+                    domain = domain_match.group(1)
+                    argo_domains.append(domain)
+           
+            if argo_domains:
+                argo_domain = argo_domains[0]
+                print(f'ArgoDomain: {argo_domain}')
+                await generate_links(argo_domain)
+            else:
+                print('ArgoDomain not found, re-running bot to obtain ArgoDomain')
+                if os.path.exists(boot_log_path):
+                    os.remove(boot_log_path)
+               
+                try:
+                    exec_cmd('pkill -f "[b]ot" > /dev/null 2>&1')
+                except:
+                    pass
+               
+                time.sleep(1)
+                args = f'tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile {FILE_PATH}/boot.log --loglevel info --url http://localhost:{ARGO_PORT}'
+                exec_cmd(f'nohup {os.path.join(FILE_PATH, "bot")} {args} >/dev/null 2>&1 &')
+                print('bot is running.')
+                time.sleep(6)
+                await extract_domains()
+        except Exception as e:
+            print(f'Error reading boot.log: {e}')
+
+# Upload nodes to subscription service
+def upload_nodes():
+    if UPLOAD_URL and PROJECT_URL:
+        subscription_url = f"{PROJECT_URL}/{SUB_PATH}"
+        json_data = {
+            "subscription": [subscription_url]
+        }
+       
+        try:
+            response = requests.post(
+                f"{UPLOAD_URL}/api/add-subscriptions",
+                json=json_data,
+                headers={"Content-Type": "application/json"}
+            )
+           
+            if response.status_code == 200:
+                print('Subscription uploaded successfully')
+        except Exception as e:
+            pass
+   
+    elif UPLOAD_URL:
+        if not os.path.exists(list_path):
+            return
+       
+        with open(list_path, 'r') as f:
+            content = f.read()
+       
+        nodes = [line for line in content.split('\n') if any(protocol in line for protocol in ['vless://', 'vmess://', 'trojan://', 'hysteria2://', 'tuic://', 'anytls://', 'socks://'])]
+       
+        if not nodes:
+            return
+       
+        json_data = json.dumps({"nodes": nodes})
+       
+        try:
+            response = requests.post(
+                f"{UPLOAD_URL}/api/add-nodes",
+                data=json_data,
+                headers={"Content-Type": "application/json"}
+            )
+           
+            if response.status_code == 200:
+                print('Nodes uploaded successfully')
+        except:
+            return None
+    else:
+        return
+
+# Send notification to Telegram
+def send_telegram():
+    if not BOT_TOKEN or not CHAT_ID:
+        print('TG variables is empty, Skipping push nodes to TG')
+        return
+   
+    try:
+        with open(sub_path, 'r') as f:
+            message = f.read()
+       
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+       
+        escaped_name = re.sub(r'([_*\[\]()~>#+=|{}.!\-])', r'\\\1', NAME)
+       
+        params = {
+            "chat_id": CHAT_ID,
+            "text": f"**{escaped_name}节点推送通知**\n{message}",
+            "parse_mode": "MarkdownV2"
+        }
+       
+        requests.post(url, params=params)
+        print('Telegram message sent successfully')
+    except Exception as e:
+        print(f'Failed to send Telegram message: {e}')
+
+# Generate links and subscription content
+async def generate_links(argo_domain):
+    SERVER_IP = ''
+    try:
+        SERVER_IP = subprocess.check_output('curl -s --max-time 2 ipv4.ip.sb', shell=True).decode().strip()
+    except:
+        try:
+            SERVER_IP = f"[{subprocess.check_output('curl -s --max-time 1 ipv6.ip.sb', shell=True).decode().strip()}]"
+        except Exception as e:
+            print(f'Failed to get IP address: {e}')
+    # Get ISP info
+    try:
+        cmd = '''curl -sm 3 -H 'User-Agent: Mozilla/5.0' 'https://api.ip.sb/geoip' | tr -d '\n' | awk -F'"' '{c="";i="";for(x=1;x<=NF;x++){if($x=="country_code")c=$(x+2);if($x=="isp")i=$(x+2)};if(c&&i)print c"-"i}' | sed 's/ /_/g' '''
+        meta_info = subprocess.check_output(cmd, shell=True).decode().strip()
+        ISP = meta_info
+    except:
+        ISP = "Unknown"
+    if NAME and NAME.strip():
+        Nodename = f"{NAME.strip()}-{ISP}"
+    else:
+        Nodename = f"{ISP}"
+    # vmess node
+    vmess_node = ""
+    if not DISABLE_ARGO and argo_domain:
+        vmess_config = {
+            "v": "2","ps": f"{Nodename}","add": CFIP,"port": CFPORT,"id": UUID,"aid": "0","scy": "auto","net": "ws","type": "none",
+            "host": argo_domain,"path": "/vmess-argo?ed=2560","tls": "tls","sni": argo_domain,"alpn": "","fp": "firefox"
+            }
+       
+        vmess_node = f"vmess://{base64.b64encode(json.dumps(vmess_config).encode()).decode()}"
+    # Initialize sub_txt with vmess node if Argo is enabled
+    if vmess_node:
+        sub_txt = vmess_node
+    else:
+        sub_txt = ''
+    # Generate other nodes based on port
+    if TUIC_PORT is not None:
+        tuic_node = f"\ntuic://{UUID}:@{SERVER_IP}:{TUIC_PORT}?sni=www.bing.com&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#{Nodename}"
+        if sub_txt:
+            sub_txt += tuic_node
+        else:
+            sub_txt = tuic_node
+    if HY2_PORT is not None:
+        hysteria_node = f"\nhysteria2://{UUID}@{SERVER_IP}:{HY2_PORT}/?sni=www.bing.com&insecure=1&alpn=h3&obfs=none#{Nodename}"
+        if sub_txt:
+            sub_txt += hysteria_node
+        else:
+            sub_txt = hysteria_node
+    if REALITY_PORT is not None:
+        vless_node = f"\nvless://{UUID}@{SERVER_IP}:{REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.iij.ad.jp&fp=chrome&pbk={public_key}&type=tcp&headerType=none#{Nodename}"
+        if sub_txt:
+            sub_txt += vless_node
+        else:
+            sub_txt = vless_node
+    if ANYTLS_PORT is not None:
+        anytls_node = f"\nanytls://{UUID}@{SERVER_IP}:{ANYTLS_PORT}?security=tls&sni={SERVER_IP}&fp=chrome&insecure=1&allowInsecure=1#{Nodename}"
+        if sub_txt:
+            sub_txt += anytls_node
+        else:
+            sub_txt = anytls_node
+    if ANYREALITY_PORT is not None:
+        anyreality_node = f"\nanytls://{UUID}@{SERVER_IP}:{ANYREALITY_PORT}?security=reality&sni=www.iij.ad.jp&fp=chrome&pbk={public_key}&type=tcp&headerType=none#{Nodename}"
+        if sub_txt:
+            sub_txt += anyreality_node
+        else:
+            sub_txt = anyreality_node
+    if S5_PORT is not None:
+        S5_AUTH = base64.b64encode(f"{UUID[0:8]}:{UUID[-12:]}".encode()).decode()
+        s5_node = f"\nsocks://{S5_AUTH}@{SERVER_IP}:{S5_PORT}#{Nodename}"
+        if sub_txt:
+            sub_txt += s5_node
+        else:
+            sub_txt = s5_node
+    # Save to files
+    with open(sub_path, 'w') as f:
+        f.write(base64.b64encode(sub_txt.encode()).decode())
+   
+    with open(list_path, 'w') as f:
+        f.write(sub_txt)
+   
+    print('\033[32m' + base64.b64encode(sub_txt.encode()).decode() + '\033[0m')
+    print(f"\nLogs will be deleted in 90 seconds,you can copy the above nodes")
+    print(f"{FILE_PATH}/sub.txt saved successfully")
+   
+    # Additional actions
+    send_telegram()
+    upload_nodes()
+ 
+    return sub_txt
+
+# Add automatic access task
+def add_visit_task():
+    if not AUTO_ACCESS or not PROJECT_URL:
+        print("Skipping adding automatic access task")
+        return
+   
+    try:
+        response = requests.post(
+            'https://keep.gvrander.eu.org/add-url',
+            json={"url": PROJECT_URL},
+            headers={"Content-Type": "application/json"}
+        )
+        print('automatic access task added successfully')
+    except Exception as e:
+        print(f'Failed to add URL: {e}')
+
+# Clean up files after 90 seconds
+def clean_files():
+    def _cleanup():
+        time.sleep(90)
+        files_to_delete = [boot_log_path, config_path, list_path, web_path, bot_path]
+       
+        if KOMARI_SERVER and KOMARI_TOKEN:
+            files_to_delete.append(agent_path)
+       
+        for file in files_to_delete:
+            try:
+                if os.path.exists(file):
+                    if os.path.isdir(file):
+                        shutil.rmtree(file)
+                    else:
+                        os.remove(file)
+            except:
+                pass
+       
+        print('\033c', end='')
+        print('App is running')
+        print('Thank you for using this script, enjoy!')
+   
+    threading.Thread(target=_cleanup, daemon=True).start()
+
+# Main function to start the server
+async def start_server():
+    delete_nodes()
+    cleanup_old_files()
+    create_directory()
+    argo_type()
+    await download_files_and_run()
+    add_visit_task()
+   
+    server_thread = Thread(target=run_server)
+    server_thread.daemon = True
+    server_thread.start()
+   
+    clean_files()
+
+def run_server():
+    server = HTTPServer(('0.0.0.0', PORT), RequestHandler)
+    print(f"Server is running on port {PORT}")
+    print(f"Running done！")
+    server.serve_forever()
+
+def run_async():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(start_server())
+   
+    while True:
+        time.sleep(3600)
+       
+if __name__ == "__main__":
+    run_async()
+
+def main():
+    run_async()
