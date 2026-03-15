@@ -24,11 +24,11 @@ SUB_PATH = os.environ.get('SUB_PATH', 'sub')
 UUID = os.environ.get('UUID', 'f929c4da-dc2e-4e0d-9a6f-1799036af214')
 
 # Komari 相關變數（替換原 NEZHA）
-KOMARI_SERVER = os.environ.get('KOMARI_SERVER', '')   # 例如 http://your-panel-domain:25774
-KOMARI_TOKEN  = os.environ.get('KOMARI_TOKEN', '')    # 面板新增節點後取得的 token
+KOMARI_SERVER = os.environ.get('KOMARI_SERVER', 'https://komari.afnos86.xx.kg')   # 例如 http://your-panel-domain:25774
+KOMARI_TOKEN  = os.environ.get('KOMARI_TOKEN', '3IS7SHIUav6I6mbaO0rOgS')    # 面板新增節點後取得的 token
 
-ARGO_DOMAIN = os.environ.get('ARGO_DOMAIN', '')
-ARGO_AUTH = os.environ.get('ARGO_AUTH', '')
+ARGO_DOMAIN = os.environ.get('ARGO_DOMAIN', 'bytte.afnos.indevs.in')
+ARGO_AUTH = os.environ.get('ARGO_AUTH', 'eyJhIjoiZjZhMGEwMjdiZmJiOGEwZjAwODUzOWY2NmQ1MmU2NWUiLCJ0IjoiYzYzMzgyZDYtMmI3NC00ZDJjLTlhNDMtOWM0NDU3MDcwZTY0IiwicyI6IlltVmxaRFV4Tm1ZdE1tRTNNQzAwWVRCa0xUazRZamt0WkRrNFlUZGtOakppWTJWayJ9')
 ARGO_PORT = int(os.environ.get('ARGO_PORT', '8001'))
 S5_PORT_STR = os.environ.get('S5_PORT', '')
 TUIC_PORT_STR = os.environ.get('TUIC_PORT', '')
